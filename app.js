@@ -216,24 +216,39 @@
   function resetWordForm() { $("#word-form").reset(); $("#editing-word-id").value = ""; $("#word-form-title").textContent = "単語を追加"; $("#save-word-button").textContent = "追加する"; $("#cancel-word-edit").classList.add("hidden"); }
   function startQuiz(book, words, title) {
     if (!book?.words.length || !words.length) { showToast("この単語帳には単語がありません。"); return; }
-    quiz = { book, words: [...words].sort(() => Math.random() - .5), index: 0, remembered: 0, title, settings: { ...settings } };
+    quiz = { book, words: [...words].sort(() => Math.random() - .5), index: 0, remembered: 0, title, completed: false, settings: { ...settings } };
     $("#study-setup").classList.add("hidden"); $("#quiz-card").classList.remove("hidden"); renderQuiz();
   }
   function renderQuiz() {
     if (quiz.index >= quiz.words.length) return finishQuiz();
     const word = quiz.words[quiz.index]; const text = labels(quiz.book.category); const prompt = quiz.settings.direction === "forward" ? word.front : word.back; const answer = quiz.settings.direction === "forward" ? word.back : word.front;
     $("#quiz-card").dataset.wordId = word.id; $("#quiz-card").dataset.answer = answer;
-    $("#quiz-card").innerHTML = `<div class="quiz-progress"><span>${escapeHtml(quiz.title)}</span><span>${quiz.index + 1} / ${quiz.words.length}</span></div><div class="progress-line"><i style="width:${(quiz.index / quiz.words.length) * 100}%"></i></div><p class="quiz-type">${quiz.settings.direction === "forward" ? text.forward : text.reverse}</p><h3 class="question">${escapeHtml(prompt)}</h3>${quiz.settings.mode === "typing" ? `<p class="question-hint">答えを入力してください。</p><form id="answer-form" class="answer-form"><input id="quiz-answer" autocomplete="off" autocapitalize="none" required autofocus placeholder="答えを入力" /><button class="button primary" type="submit">回答する</button></form><div id="answer-result"></div>` : `<p class="question-hint">答えを表示して、自分で判定してください。</p><button id="show-answer" class="button primary large" type="button">答えを表示する</button>`}`;
+    $("#quiz-card").innerHTML = `<div class="quiz-topbar"><div class="quiz-progress"><span>${escapeHtml(quiz.title)}</span><span>${quiz.index + 1} / ${quiz.words.length}</span></div><button id="end-quiz" class="button quiz-exit-button" type="button">テストを終了</button></div><div class="progress-line"><i style="width:${(quiz.index / quiz.words.length) * 100}%"></i></div><p class="quiz-type">${quiz.settings.direction === "forward" ? text.forward : text.reverse}</p><h3 class="question">${escapeHtml(prompt)}</h3>${quiz.settings.mode === "typing" ? `<p class="question-hint">答えを入力してください。</p><form id="answer-form" class="answer-form"><input id="quiz-answer" autocomplete="off" autocapitalize="none" required autofocus placeholder="答えを入力" /><button class="button primary" type="submit">回答する</button></form><div id="answer-result"></div>` : `<p class="question-hint">答えを表示して、自分で判定してください。</p><button id="show-answer" class="button primary large show-answer-button" type="button">答えを表示する</button>`}`;
     if (quiz.settings.mode === "typing") $("#quiz-answer").focus();
   }
   function submitTypingAnswer(event) {
     event.preventDefault(); const answer = $("#quiz-card").dataset.answer; const asksForMeaning = quiz.settings.direction === "forward"; const quizWord = wordById(quiz.book, $("#quiz-card").dataset.wordId); const storedCandidates = Array.isArray(quizWord?.answerCandidates) ? quizWord.answerCandidates.map(normalize).filter(Boolean) : []; const correctCandidates = asksForMeaning && storedCandidates.length ? storedCandidates : asksForMeaning ? answerCandidates(answer, quiz.book.category) : [normalize(answer)]; const correct = correctCandidates.includes(normalize($("#quiz-answer").value));
+    if (!correct && quizWord && !quiz.book.reviewIds.includes(quizWord.id)) { quiz.book.reviewIds.unshift(quizWord.id); saveData(); }
     $("#answer-form").classList.add("hidden"); $("#answer-result").innerHTML = `<div class="result-box ${correct ? "correct" : "wrong"}">${correct ? "正解です！" : `正解は「${escapeHtml(answer)}」です。`}</div><div class="quiz-actions"><button id="next-question" class="button primary" type="button">${quiz.index + 1 === quiz.words.length ? "結果を見る" : "次の問題へ"}</button></div>`;
   }
   function showSelfcheckAnswer() { const answer = $("#quiz-card").dataset.answer; $("#show-answer").outerHTML = `<div class="answer-display"><span>答え</span><strong>${escapeHtml(answer)}</strong></div><div class="selfcheck-actions"><button class="button remember" data-selfcheck="remember" type="button">覚えた</button><button class="button forget" data-selfcheck="forget" type="button">覚えてない</button></div>`; }
   function selfcheck(result) { const id = $("#quiz-card").dataset.wordId; if (result === "forget" && !quiz.book.reviewIds.includes(id)) quiz.book.reviewIds.unshift(id); if (result === "remember") { quiz.book.reviewIds = quiz.book.reviewIds.filter(reviewId => reviewId !== id); quiz.remembered++; } quiz.index++; saveData(); renderQuiz(); }
   function nextQuestion() { quiz.index++; renderQuiz(); }
-  function finishQuiz() { $("#quiz-card").innerHTML = `<p class="quiz-type">COMPLETED</p><h3 class="question">テスト完了！</h3><p class="question-hint">おつかれさまでした。必要なら「覚えてない」を選んだ単語を復習してください。</p><div class="quiz-actions"><button id="back-to-setup" class="button ghost" type="button">設定に戻る</button><button id="retry-quiz" class="button ghost" type="button">もう一度テスト</button><button id="go-review" class="button primary" type="button">復習を見る</button></div>`; }
+  function finishQuiz() { quiz.completed = true; $("#quiz-card").innerHTML = `<p class="quiz-type">COMPLETED</p><h3 class="question">テスト完了！</h3><p class="question-hint">おつかれさまでした。必要なら「覚えてない」または不正解だった単語を復習してください。</p><div class="quiz-actions"><button id="back-to-setup" class="button ghost" type="button">設定に戻る</button><button id="retry-quiz" class="button ghost" type="button">もう一度テスト</button><button id="go-review" class="button primary" type="button">復習を見る</button></div>`; }
+  function closeQuiz(destination = "study") {
+    $("#quiz-card").classList.add("hidden");
+    $("#study-setup").classList.remove("hidden");
+    quiz = null;
+    renderStudySetup();
+    goTo(destination);
+  }
+  function endQuiz(destination = "study") {
+    if (!quiz || quiz.completed) { closeQuiz(destination); return; }
+    if (!confirm("テストを終了しますか？\nここまでの復習対象は保存されます。")) return;
+    saveData();
+    closeQuiz(destination);
+    showToast("テストを終了しました。復習対象は保存されています。");
+  }
 
   function showSignedOut() {
     authLoadVersion++;
@@ -322,7 +337,7 @@
   }
 
   document.addEventListener("click", event => {
-    const nav = event.target.closest(".nav-button"); if (nav) return goTo(nav.dataset.view);
+    const nav = event.target.closest(".nav-button"); if (nav) { if (quiz && !quiz.completed && nav.dataset.view !== "study") return endQuiz(nav.dataset.view); return goTo(nav.dataset.view); }
     const bookButton = event.target.closest("[data-select-book]"); if (bookButton) { selectBook(bookButton.dataset.selectBook); showToast("単語帳を選択しました。"); return; }
     const removeImage = event.target.closest("[data-remove-image]"); if (removeImage) { selectedImages.splice(Number(removeImage.dataset.removeImage), 1); renderSelectedImages(); setOcrStatus(selectedImages.length ? "画像を変更しました。「画像を読み取る」を押してください。" : "画像を選択して「画像を読み取る」を押してください。"); return; }
     if (event.target.id === "run-ocr-button") return runOcr();
@@ -347,12 +362,13 @@
     const direction = event.target.closest("[data-direction]"); if (direction) { settings.direction = direction.dataset.direction; return renderStudySetup(); }
     const mode = event.target.closest("[data-mode]"); if (mode) { settings.mode = mode.dataset.mode; return renderStudySetup(); }
     if (event.target.id === "start-study-button") { const book = bookById(settings.notebookId); return startQuiz(book, book?.words || [], book?.name || "テスト"); }
+    if (event.target.id === "end-quiz") return endQuiz();
     if (event.target.id === "show-answer") return showSelfcheckAnswer();
     const selfcheckButton = event.target.closest("[data-selfcheck]"); if (selfcheckButton) return selfcheck(selfcheckButton.dataset.selfcheck);
     if (event.target.id === "next-question") return nextQuestion();
-    if (event.target.id === "back-to-setup") { $("#quiz-card").classList.add("hidden"); $("#study-setup").classList.remove("hidden"); quiz = null; return; }
+    if (event.target.id === "back-to-setup") return closeQuiz();
     if (event.target.id === "retry-quiz") return startQuiz(quiz.book, quiz.words, quiz.title);
-    if (event.target.id === "go-review") return goTo("review");
+    if (event.target.id === "go-review") return closeQuiz("review");
     if (event.target.id === "review-start") { const book = activeBook(); settings = { ...settings, notebookId: book.id, direction: "forward", mode: "selfcheck" }; goTo("study"); return startQuiz(book, book.reviewIds.map(id => wordById(book, id)).filter(Boolean), `${book.name}の復習`); }
     const removeReview = event.target.closest("[data-remove-review]"); if (removeReview) { const book = activeBook(); book.reviewIds = book.reviewIds.filter(id => id !== removeReview.dataset.removeReview); saveData(); return; }
     if (event.target.id === "cancel-notebook-edit") { $("#notebook-category").disabled = false; return resetNotebookForm(); }
