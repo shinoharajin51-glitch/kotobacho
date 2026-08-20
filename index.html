@@ -142,6 +142,41 @@
               <select id="study-notebook-select"></select>
             </label>
             <div id="study-book-detail" class="book-detail"></div>
+            <div id="study-range-picker" class="setting-group range-picker">
+              <h3>出題範囲</h3>
+              <p class="range-help">単語帳の上から数えます。選び方をタップしてください。</p>
+              <div class="range-mode-tabs" role="tablist" aria-label="出題範囲の選び方">
+                <button class="range-mode-button selected" data-range-mode="fixed" type="button" role="tab">固定範囲</button>
+                <button class="range-mode-button" data-range-mode="ranges" type="button" role="tab">開始・終了</button>
+                <button class="range-mode-button" data-range-mode="individual" type="button" role="tab">番号を選択</button>
+              </div>
+
+              <section id="fixed-range-panel" class="range-panel" aria-label="固定範囲">
+                <div id="fixed-range-buttons" class="fixed-range-grid">
+                  <button class="range-preset-button selected" data-range-preset="all" type="button">全単語</button>
+                  <button class="range-preset-button" data-range-preset="1-25" type="button">1〜25</button>
+                  <button class="range-preset-button" data-range-preset="26-50" type="button">26〜50</button>
+                  <button class="range-preset-button" data-range-preset="51-75" type="button">51〜75</button>
+                  <button class="range-preset-button" data-range-preset="76-100" type="button">76〜100</button>
+                </div>
+              </section>
+
+              <section id="continuous-range-panel" class="range-panel hidden" aria-label="開始番号と終了番号">
+                <div id="study-range-list" class="study-range-list"></div>
+                <button id="add-study-range" class="button ghost range-add-button" type="button">＋ 範囲を追加</button>
+              </section>
+
+              <section id="individual-range-panel" class="range-panel hidden" aria-label="単語番号を選択">
+                <div class="number-selection-actions">
+                  <button class="button ghost small-button" data-number-action="all" type="button">すべて選択</button>
+                  <button class="button ghost small-button" data-number-action="clear" type="button">すべて解除</button>
+                  <button class="button ghost small-button" data-number-action="invert" type="button">選択を反転</button>
+                </div>
+                <div id="study-number-grid" class="study-number-grid" aria-label="出題する単語番号"></div>
+              </section>
+
+              <div id="study-selection-summary" class="study-selection-summary" aria-live="polite">出題数：0語</div>
+            </div>
             <div class="setting-group"><h3>出題の向き</h3><div id="study-direction" class="choice-grid"></div></div>
             <div class="setting-group"><h3>テスト方式</h3><div id="study-mode" class="choice-grid"><button class="choice-button selected" data-mode="typing" type="button">キーボードで回答</button><button class="choice-button" data-mode="selfcheck" type="button">答えを見て自己判定</button></div></div>
             <button id="start-study-button" class="button primary large" type="button">テストを始める</button>
@@ -161,6 +196,7 @@
     <script src="cloud-store.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="table-ocr.js"></script>
+    <script src="study-range-utils.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

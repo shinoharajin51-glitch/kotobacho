@@ -6,6 +6,7 @@
   const localDataForMigration = loadLocalData();
   let data = structuredClone(emptyData);
   let settings = { notebookId: null, direction: "forward", mode: "typing" };
+  let studySelection = { bookId: null, mode: "fixed", preset: "all", ranges: [], numbers: new Set() };
   let currentUser = null;
   let cloudReady = false;
   let authLoadVersion = 0;
@@ -18,6 +19,30 @@
   const labels = (category) => category === "english"
     ? { front: "英語", back: "日本語の意味", forward: "英語 → 日本語", reverse: "日本語 → 英語", frontPlaceholder: "例: diligent", backPlaceholder: "例: 勤勉な" }
     : { front: "古文", back: "意味", forward: "古文 → 意味", reverse: "意味 → 古文", frontPlaceholder: "例: をかし", backPlaceholder: "例: 趣がある、すばらしい" };
+  const rangePresets = window.StudyRangeUtils.PRESETS;
+
+  function newStudyRange(start = "", end = "") {
+    return { id: crypto.randomUUID(), start: String(start), end: String(end) };
+  }
+
+  function ensureStudySelection(book) {
+    if (!book || studySelection.bookId === book.id) return;
+    studySelection = {
+      bookId: book.id,
+      mode: "fixed",
+      preset: "all",
+      ranges: [newStudyRange(1, Math.min(25, book.words.length || 1))],
+      numbers: new Set(),
+    };
+  }
+
+  function selectedStudyNumbers(book) {
+    return book?.words.length ? window.StudyRangeUtils.selectedNumbers(studySelection, book.words.length) : [];
+  }
+
+  function selectedStudyWords(book) {
+    return selectedStudyNumbers(book).map(number => book.words[number - 1]).filter(Boolean);
+  }
 
   function loadLocalData() {
     try {
@@ -128,15 +153,71 @@
     $("#word-front").placeholder = text.frontPlaceholder; $("#word-back").placeholder = text.backPlaceholder; $("#word-total").textContent = `${book.words.length}語`;
     $("#word-list").innerHTML = book.words.length ? book.words.map(word => `<article class="word-row"><div class="word-main"><strong class="word-term">${escapeHtml(word.front)}</strong><span class="word-meaning">${escapeHtml(word.back)}</span>${word.note ? `<span class="word-meta">${escapeHtml(word.note)}</span>` : ""}</div><div class="row-actions"><button class="icon-button" data-edit-word="${word.id}" type="button" aria-label="${escapeHtml(word.front)}を編集">編集</button><button class="icon-button delete" data-delete-word="${word.id}" type="button" aria-label="${escapeHtml(word.front)}を削除">削除</button></div></article>`).join("") : `<div class="empty-state">まだ単語がありません。左のフォームから追加してください。</div>`;
   }
+  function rangePreviewText(range, total) {
+    const start = Number.parseInt(range.start, 10);
+    const end = Number.parseInt(range.end, 10);
+    if (!range.start || !range.end) return "開始番号と終了番号を入力してください";
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start) return "開始番号は終了番号以下にしてください";
+    if (start > total) return `この単語帳は${total}語までです`;
+    const actualEnd = Math.min(end, total);
+    return `${start}〜${actualEnd}：${actualEnd - start + 1}語`;
+  }
+
+  function updateStudySelectionUi(book) {
+    if (!book) return;
+    const total = book.words.length;
+    document.querySelectorAll("[data-range-mode]").forEach(button => {
+      const selected = button.dataset.rangeMode === studySelection.mode;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+    $("#fixed-range-panel").classList.toggle("hidden", studySelection.mode !== "fixed");
+    $("#continuous-range-panel").classList.toggle("hidden", studySelection.mode !== "ranges");
+    $("#individual-range-panel").classList.toggle("hidden", studySelection.mode !== "individual");
+
+    document.querySelectorAll("[data-range-preset]").forEach(button => {
+      const selected = studySelection.mode === "fixed" && button.dataset.rangePreset === studySelection.preset;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+      const bounds = rangePresets[button.dataset.rangePreset];
+      button.disabled = Boolean(bounds && bounds[0] > total);
+    });
+    document.querySelectorAll("[data-study-number]").forEach(button => {
+      const number = Number(button.dataset.studyNumber);
+      const selected = studySelection.numbers.has(number);
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    studySelection.ranges.forEach(range => {
+      const preview = document.querySelector(`[data-range-preview="${range.id}"]`);
+      if (preview) preview.textContent = rangePreviewText(range, total);
+    });
+
+    const count = selectedStudyNumbers(book).length;
+    $("#study-selection-summary").innerHTML = `<span>出題数</span><strong>${count}語</strong>`;
+    $("#start-study-button").disabled = count === 0;
+    $("#start-study-button").textContent = count ? `${count}語でテストを始める` : "出題範囲を選んでください";
+  }
+
+  function renderStudyRangePicker(book) {
+    ensureStudySelection(book);
+    const total = book.words.length;
+    $("#study-range-list").innerHTML = studySelection.ranges.length ? studySelection.ranges.map((range, index) => `<div class="study-range-row" data-study-range-row="${range.id}"><div class="range-row-heading"><strong>範囲${index + 1}</strong><button class="mini-button danger" data-remove-study-range="${range.id}" type="button">削除</button></div><div class="range-inputs"><label>開始番号<input type="number" inputmode="numeric" min="1" max="${total}" step="1" value="${escapeHtml(range.start)}" data-range-start="${range.id}" aria-label="範囲${index + 1}の開始番号" /></label><span aria-hidden="true">〜</span><label>終了番号<input type="number" inputmode="numeric" min="1" max="${total}" step="1" value="${escapeHtml(range.end)}" data-range-end="${range.id}" aria-label="範囲${index + 1}の終了番号" /></label></div><p class="range-preview" data-range-preview="${range.id}"></p></div>`).join("") : `<div class="range-empty">「範囲を追加」を押してください。</div>`;
+    $("#study-number-grid").innerHTML = Array.from({ length: total }, (_, index) => { const number = index + 1; const term = book.words[index]?.front || ""; return `<button class="number-select-button" data-study-number="${number}" type="button" aria-pressed="false" aria-label="${number}番 ${escapeHtml(term)}" title="${number}. ${escapeHtml(term)}">${number}</button>`; }).join("");
+    updateStudySelectionUi(book);
+  }
+
   function renderStudySetup() {
     const select = $("#study-notebook-select"); const prior = settings.notebookId;
     select.innerHTML = data.notebooks.length ? data.notebooks.map(book => `<option value="${book.id}">${escapeHtml(book.name)}（${categoryName(book.category)}）</option>`).join("") : `<option value="">単語帳がありません</option>`;
     settings.notebookId = bookById(prior)?.id || data.activeNotebookId || data.notebooks[0]?.id || null; select.value = settings.notebookId || "";
     const book = bookById(settings.notebookId); const detail = $("#study-book-detail");
-    if (!book) { detail.textContent = "単語帳を作成するとテストできます。"; $("#study-direction").innerHTML = ""; $("#start-study-button").disabled = true; return; }
-    const text = labels(book.category); detail.innerHTML = `<span class="tag ${book.category === "classical" ? "classical" : ""}">${categoryName(book.category)}</span> ${book.words.length}語を出題します`;
+    $("#study-range-picker").classList.toggle("hidden", !book);
+    if (!book) { detail.textContent = "単語帳を作成するとテストできます。"; $("#study-direction").innerHTML = ""; $("#start-study-button").disabled = true; $("#start-study-button").textContent = "テストを始める"; return; }
+    const text = labels(book.category); detail.innerHTML = `<span class="tag ${book.category === "classical" ? "classical" : ""}">${categoryName(book.category)}</span> 全${book.words.length}語`;
+    renderStudyRangePicker(book);
     $("#study-direction").innerHTML = `<button class="choice-button ${settings.direction === "forward" ? "selected" : ""}" data-direction="forward" type="button">${text.forward}</button><button class="choice-button ${settings.direction === "reverse" ? "selected" : ""}" data-direction="reverse" type="button">${text.reverse}</button>`;
-    $("#study-mode").querySelectorAll("button").forEach(button => button.classList.toggle("selected", button.dataset.mode === settings.mode)); $("#start-study-button").disabled = !book.words.length;
+    $("#study-mode").querySelectorAll("button").forEach(button => button.classList.toggle("selected", button.dataset.mode === settings.mode));
   }
   function renderReview() {
     const book = activeBook(); const content = $("#review-content");
@@ -359,9 +440,15 @@
     const deleteBook = event.target.closest("[data-delete-book]"); if (deleteBook) { const book = bookById(deleteBook.dataset.deleteBook); if (confirm(`「${book.name}」と中の単語を削除しますか？`)) { data.notebooks = data.notebooks.filter(item => item.id !== book.id); if (data.activeNotebookId === book.id) data.activeNotebookId = data.notebooks[0]?.id || null; settings.notebookId = data.activeNotebookId; resetNotebookForm(); saveData(); showToast("単語帳を削除しました。"); } return; }
     const editWord = event.target.closest("[data-edit-word]"); if (editWord) { const word = wordById(activeBook(), editWord.dataset.editWord); $("#editing-word-id").value = word.id; $("#word-front").value = word.front; $("#word-back").value = word.back; $("#word-note").value = word.note; $("#word-form-title").textContent = "単語を編集"; $("#save-word-button").textContent = "保存する"; $("#cancel-word-edit").classList.remove("hidden"); $("#word-form").scrollIntoView({ behavior: "smooth", block: "center" }); return; }
     const deleteWord = event.target.closest("[data-delete-word]"); if (deleteWord) { const book = activeBook(); const word = wordById(book, deleteWord.dataset.deleteWord); if (confirm(`「${word.front}」を削除しますか？`)) { book.words = book.words.filter(item => item.id !== word.id); book.reviewIds = book.reviewIds.filter(id => id !== word.id); saveData(); showToast("単語を削除しました。"); } return; }
+    const rangeMode = event.target.closest("[data-range-mode]"); if (rangeMode) { const book = bookById(settings.notebookId); if (!book) return; studySelection.mode = rangeMode.dataset.rangeMode; if (studySelection.mode === "ranges" && !studySelection.ranges.length) studySelection.ranges.push(newStudyRange(1, Math.min(25, book.words.length))); updateStudySelectionUi(book); return; }
+    const rangePreset = event.target.closest("[data-range-preset]"); if (rangePreset) { const book = bookById(settings.notebookId); if (!book || rangePreset.disabled) return; studySelection.mode = "fixed"; studySelection.preset = rangePreset.dataset.rangePreset; updateStudySelectionUi(book); return; }
+    if (event.target.id === "add-study-range") { const book = bookById(settings.notebookId); if (!book) return; const priorEnds = studySelection.ranges.map(range => Number.parseInt(range.end, 10)).filter(Number.isInteger); const priorEnd = priorEnds.length ? Math.max(...priorEnds) : 0; const start = priorEnd < book.words.length ? priorEnd + 1 : ""; const end = start ? Math.min(start + 24, book.words.length) : ""; studySelection.mode = "ranges"; studySelection.ranges.push(newStudyRange(start, end)); renderStudyRangePicker(book); return; }
+    const removeStudyRange = event.target.closest("[data-remove-study-range]"); if (removeStudyRange) { const book = bookById(settings.notebookId); if (!book) return; studySelection.mode = "ranges"; studySelection.ranges = studySelection.ranges.filter(range => range.id !== removeStudyRange.dataset.removeStudyRange); renderStudyRangePicker(book); return; }
+    const studyNumber = event.target.closest("[data-study-number]"); if (studyNumber) { const book = bookById(settings.notebookId); if (!book) return; const number = Number(studyNumber.dataset.studyNumber); studySelection.mode = "individual"; if (studySelection.numbers.has(number)) studySelection.numbers.delete(number); else studySelection.numbers.add(number); updateStudySelectionUi(book); return; }
+    const numberAction = event.target.closest("[data-number-action]"); if (numberAction) { const book = bookById(settings.notebookId); if (!book) return; studySelection.mode = "individual"; if (numberAction.dataset.numberAction === "all") studySelection.numbers = new Set(Array.from({ length: book.words.length }, (_, index) => index + 1)); if (numberAction.dataset.numberAction === "clear") studySelection.numbers.clear(); if (numberAction.dataset.numberAction === "invert") studySelection.numbers = new Set(Array.from({ length: book.words.length }, (_, index) => index + 1).filter(number => !studySelection.numbers.has(number))); updateStudySelectionUi(book); return; }
     const direction = event.target.closest("[data-direction]"); if (direction) { settings.direction = direction.dataset.direction; return renderStudySetup(); }
     const mode = event.target.closest("[data-mode]"); if (mode) { settings.mode = mode.dataset.mode; return renderStudySetup(); }
-    if (event.target.id === "start-study-button") { const book = bookById(settings.notebookId); return startQuiz(book, book?.words || [], book?.name || "テスト"); }
+    if (event.target.id === "start-study-button") { const book = bookById(settings.notebookId); const words = book ? selectedStudyWords(book) : []; if (!words.length) { showToast("出題する単語を選んでください。"); return; } return startQuiz(book, words, book?.name || "テスト"); }
     if (event.target.id === "end-quiz") return endQuiz();
     if (event.target.id === "show-answer") return showSelfcheckAnswer();
     const selfcheckButton = event.target.closest("[data-selfcheck]"); if (selfcheckButton) return selfcheck(selfcheckButton.dataset.selfcheck);
@@ -400,6 +487,26 @@
   });
   $("#import-results").addEventListener("change", event => {
     if (event.target.matches("[data-import-front],[data-import-back]")) renderImportRows();
+  });
+  $("#study-range-list").addEventListener("input", event => {
+    const startInput = event.target.closest("[data-range-start]");
+    const endInput = event.target.closest("[data-range-end]");
+    const input = startInput || endInput;
+    const book = bookById(settings.notebookId);
+    if (!input || !book) return;
+    const rangeId = startInput ? startInput.dataset.rangeStart : endInput.dataset.rangeEnd;
+    const range = studySelection.ranges.find(item => item.id === rangeId);
+    if (!range) return;
+    let value = input.value;
+    if (value !== "") {
+      const number = Number.parseInt(value, 10);
+      value = Number.isInteger(number) ? String(Math.min(book.words.length, Math.max(1, number))) : "";
+      input.value = value;
+    }
+    if (startInput) range.start = value;
+    if (endInput) range.end = value;
+    studySelection.mode = "ranges";
+    updateStudySelectionUi(book);
   });
   $("#study-notebook-select").addEventListener("change", event => { settings.notebookId = event.target.value; const book = bookById(settings.notebookId); if (book) { data.activeNotebookId = book.id; saveData(); } else renderStudySetup(); });
   $("#notebook-form").addEventListener("submit", event => { event.preventDefault(); const id = $("#editing-notebook-id").value; const name = $("#notebook-name").value.trim(); const category = $("#notebook-category").value; if (!name) return; if (id) { const book = bookById(id); book.name = name; $("#notebook-category").disabled = false; showToast("単語帳の名前を変更しました。"); } else { const book = { id: crypto.randomUUID(), name, category, words: [], reviewIds: [] }; data.notebooks.unshift(book); data.activeNotebookId = book.id; settings.notebookId = book.id; showToast("単語帳を作成しました。"); } resetNotebookForm(); saveData(); });
