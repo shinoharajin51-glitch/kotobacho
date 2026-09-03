@@ -99,8 +99,8 @@
               <label>種類
                 <select id="import-category"><option value="english">英単語</option><option value="classical">古文単語</option></select>
               </label>
-              <label class="file-picker" for="image-input"><span>単語表の画像を選択</span><small>複数ページをまとめて選択できます</small></label>
-              <input id="image-input" type="file" accept="image/*" multiple class="visually-hidden" />
+              <label class="file-picker" for="image-input"><span>単語表の画像・PDFを選択</span><small>複数ページをまとめて選択できます</small></label>
+              <input id="image-input" type="file" accept="image/*,application/pdf,.pdf" multiple class="visually-hidden" />
               <div id="selected-images" class="selected-images"></div>
               <button id="run-ocr-button" class="button primary large" type="button">画像を読み取る</button>
               <p class="import-note">横並び2ページや、意味が2行に続く行にも対応します。日本語は濃淡を残して高解像度で再読み取りし、最良候補だけを表示します。No.列は登録しません。</p>
@@ -191,9 +191,16 @@
       </main>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <dialog id="ocr-preview-dialog" class="ocr-preview-dialog" aria-label="OCR元画像の拡大表示">
+      <div class="ocr-preview-dialog-bar"><strong>元画像</strong><button id="close-ocr-preview" class="button ghost" type="button">閉じる</button></div>
+      <img id="ocr-preview-large-image" alt="選択した行の元画像" />
+    </dialog>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="supabase-config.js"></script>
     <script src="cloud-store.js"></script>
+    <script src="ocr-japanese.js"></script>
+    <script src="ocr-image-processing.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="table-ocr.js"></script>
     <script src="study-range-utils.js"></script>

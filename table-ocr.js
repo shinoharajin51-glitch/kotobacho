@@ -24,6 +24,29 @@
     }
   }
 
+  async function loadPdf(file, onProgress) {
+    if (!window.pdfjsLib) throw new Error("PDF読み取りライブラリを読み込めませんでした。インターネット接続を確認してください");
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+    const document = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+      onProgress({ stage: "prepare", message: `PDF ${pageNumber} / ${document.numPages} ページを高解像度で準備中…` });
+      const page = await document.getPage(pageNumber);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.max(2, Math.min(4, 2800 / Math.max(base.width, base.height)));
+      const viewport = page.getViewport({ scale });
+      const canvas = canvasFromSize(viewport.width, viewport.height);
+      await page.render({ canvasContext: canvas.getContext("2d", { willReadFrequently: true }), viewport }).promise;
+      pages.push(canvas);
+    }
+    return pages;
+  }
+
+  async function loadSourcePages(file, onProgress) {
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    return isPdf ? loadPdf(file, onProgress) : [await loadImage(file)];
+  }
+
   function cropCanvas(source, x, y, width, height) {
     const canvas = canvasFromSize(width, height);
     canvas.getContext("2d", { willReadFrequently: true }).drawImage(
@@ -54,6 +77,19 @@
     return groups.map(group => Math.round(group.reduce((sum, value) => sum + value, 0) / group.length));
   }
 
+  function countHorizontalRules(source) {
+    const gray = grayscalePixels(source);
+    const rows = [];
+    for (let y = 1; y < source.height - 1; y++) {
+      let dark = 0;
+      for (let x = 0; x < source.width; x += 2) {
+        if (gray[y * source.width + x] < DARK_THRESHOLD) dark++;
+      }
+      if (dark >= source.width * 0.18) rows.push(y);
+    }
+    return groupPositions(rows, 4).length;
+  }
+
   function splitPages(source) {
     if (source.width / source.height < 1.15) return [source];
     const gray = grayscalePixels(source);
@@ -73,10 +109,12 @@
     }
     const sampled = Math.ceil(source.height / 2) * Math.ceil((radius * 2 + 1) / 2);
     if (bestScore > sampled * 0.18) return [source];
-    return [
+    const halves = [
       cropCanvas(source, 0, 0, bestX, source.height),
       cropCanvas(source, bestX, 0, source.width - bestX, source.height)
     ];
+    // 白い中央だけでは分割せず、左右に十分な表の横罫線があることも確認する。
+    return halves.every(half => countHorizontalRules(half) >= 8) ? halves : [source];
   }
 
   function findTable(page) {
@@ -104,7 +142,7 @@
           if (gray[scanY * width + x] < DARK_THRESHOLD) { left = Math.min(left, x); right = Math.max(right, x); }
         }
       }
-      return { left, right };
+      return { y, left, right };
     }).filter(edge => edge.right > edge.left);
     const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
     const left = median(lineEdges.map(edge => edge.left));
@@ -116,21 +154,49 @@
     const verticalCandidates = [];
     const minVerticalInk = (bottom - top) * 0.42;
     for (let x = Math.max(0, left - 3); x <= Math.min(width - 1, right + 3); x++) {
-      let count = 0;
+      let count = 0; let run = 0; let longestRun = 0; let allowedGap = 0;
       for (let y = top; y <= bottom; y++) {
         const dark = gray[y * width + Math.max(0, x - 1)] < DARK_THRESHOLD || gray[y * width + x] < DARK_THRESHOLD || gray[y * width + Math.min(width - 1, x + 1)] < DARK_THRESHOLD;
-        if (dark) count++;
+        if (dark) {
+          count++; run++; allowedGap = 0;
+        } else if (run && allowedGap < 2) {
+          run++; allowedGap++;
+        } else {
+          longestRun = Math.max(longestRun, run - allowedGap);
+          run = 0; allowedGap = 0;
+        }
       }
-      if (count >= minVerticalInk) verticalCandidates.push(x);
+      longestRun = Math.max(longestRun, run - allowedGap);
+      if (count >= minVerticalInk && longestRun >= (bottom - top) * 0.30) verticalCandidates.push(x);
     }
-    const detectedVerticals = groupPositions(verticalCandidates, 4);
-    const expected = [left, left + tableWidth * 0.095, left + tableWidth * 0.285, right];
-    const verticalLines = expected.map(target => {
-      const nearest = detectedVerticals.reduce((best, value) => Math.abs(value - target) < Math.abs(best - target) ? value : best, target);
-      return Math.abs(nearest - target) <= tableWidth * 0.055 ? nearest : Math.round(target);
-    });
+    const detectedVerticals = groupPositions(verticalCandidates, 4).filter(value => value >= left - 4 && value <= right + 4);
+    const chooseColumn = (minimumFraction, maximumFraction, idealFraction, after = left) => {
+      const candidates = detectedVerticals.filter(value => {
+        const fraction = (value - left) / tableWidth;
+        return fraction >= minimumFraction && fraction <= maximumFraction && value > after + tableWidth * 0.05;
+      });
+      if (!candidates.length) return Math.round(left + tableWidth * idealFraction);
+      const nearest = candidates.reduce((best, value) => Math.abs((value - left) / tableWidth - idealFraction) < Math.abs((best - left) / tableWidth - idealFraction) ? value : best);
+      return Math.abs((nearest - left) / tableWidth - idealFraction) <= 0.035 ? nearest : Math.round(left + tableWidth * idealFraction);
+    };
+    const numberRight = chooseColumn(0.035, 0.19, 0.095);
+    const wordRight = chooseColumn(0.16, 0.48, 0.285, numberRight);
+    const verticalLines = [left, numberRight, wordRight, right];
     if (verticalLines[1] - verticalLines[0] < 12 || verticalLines[2] - verticalLines[1] < 35) throw new Error("表の列を検出できませんでした");
-    return { horizontalLines, verticalLines };
+    return { horizontalLines, verticalLines, lineEdges, left, right, top, bottom };
+  }
+
+  function columnsForRow(table, y1, y2) {
+    const nearestEdge = y => table.lineEdges.reduce((best, edge) => Math.abs(edge.y - y) < Math.abs(best.y - y) ? edge : best);
+    const topEdge = nearestEdge(y1);
+    const bottomEdge = nearestEdge(y2);
+    const localLeft = Math.round((topEdge.left + bottomEdge.left) / 2);
+    const localRight = Math.round((topEdge.right + bottomEdge.right) / 2);
+    const width = localRight - localLeft;
+    const baseWidth = table.right - table.left;
+    const firstFraction = (table.verticalLines[1] - table.left) / baseWidth;
+    const secondFraction = (table.verticalLines[2] - table.left) / baseWidth;
+    return [localLeft, Math.round(localLeft + width * firstFraction), Math.round(localLeft + width * secondFraction), localRight];
   }
 
   function otsuThreshold(gray) {
@@ -314,10 +380,11 @@
     };
   }
 
-  function evaluateJapanese(result, variant, cleanMeaning) {
+  function evaluateJapanese(result, variant, analyzeMeaning) {
     const raw = String(result.data.text || "").trim();
     const normalizedRaw = raw.normalize("NFKC");
-    const value = cleanMeaning(raw);
+    const postprocess = analyzeMeaning(raw);
+    const value = postprocess.meaning;
     const compact = normalizedRaw.replace(/[\s　]/g, "");
     const allowed = /[ぁ-んァ-ン一-龯々ゝゞーA-Za-z0-9①-⑳、。，．,.・･/／\\'"“”‘’「」『』()（）\[\]【】≪≫〈〉《》〔〕｛｝{}<>：:;；!?！？+%％-]/;
     const abnormalCount = [...compact].filter(char => !allowed.test(char)).length;
@@ -329,6 +396,7 @@
     const markerOrderBroken = markers.some((marker, index) => index > 0 && marker <= markers[index - 1]);
     const missingFirstMarker = markers.some(marker => marker >= 2) && !markers.includes(1);
     const mojibake = /[�□■◆◇_=~^`|]|\uFFFD/.test(normalizedRaw);
+    const lineArtifact = /[ー一―‐-]{5,}|(.)\1{5,}/.test(normalizedRaw);
     const outsideParentheses = normalizedRaw.replace(/[（(][^）)]*[）)]/g, "");
     const mixedLatinOutsideContext = /[A-Za-z]/.test(outsideParentheses) && /[ぁ-んァ-ン一-龯々]/.test(outsideParentheses);
     const brokenLeadingMarker = /^[DＯO0)）]\s*(?=[ぁ-んァ-ン一-龯々])/.test(normalizedRaw);
@@ -344,14 +412,16 @@
     quality += japaneseRatio >= 0.35 ? 10 : japaneseRatio >= 0.15 ? 3 : -10;
     quality += !markerOrderBroken && !missingFirstMarker ? 7 : -8;
     if (mojibake) quality -= 15;
-    if (mixedLatinOutsideContext) quality -= 8;
+    if (lineArtifact) quality -= 22;
+    if (mixedLatinOutsideContext) quality -= 40;
     if (brokenLeadingMarker) quality -= 4;
     if (brokenBrackets) quality -= 12;
     quality = clamp(quality);
     return {
       type: "meaning", raw, value, confidence: result.data.confidence || 0, quality,
-      suspicious: !value || !lengthOkay || abnormalRatio > 0.08 || mojibake || markerOrderBroken || missingFirstMarker || brokenBrackets || quality < 76 || (result.data.confidence || 0) < 72,
-      variant: variant.name
+      suspicious: !value || !lengthOkay || abnormalRatio > 0.08 || mojibake || lineArtifact || mixedLatinOutsideContext || markerOrderBroken || missingFirstMarker || brokenBrackets || postprocess.uncertain || quality < 76 || (result.data.confidence || 0) < 72,
+      variant: variant.name,
+      postprocess
     };
   }
 
@@ -360,8 +430,16 @@
     if (!valid.length) return { candidate: candidates[0], reliability: 0, consistency: 0, unresolved: true, attempts: candidates.length };
     for (const candidate of valid) {
       const others = valid.filter(item => item !== candidate);
-      const similarities = others.map(other => textSimilarity(candidate.value, other.value, type));
+      const similarities = others.map(other => {
+        const valueMatch = textSimilarity(candidate.value, other.value, type);
+        if (type !== "meaning") return valueMatch;
+        const rawMatch = textSimilarity(candidate.raw, other.raw, "meaning");
+        return valueMatch * 0.68 + rawMatch * 0.32;
+      });
       candidate.consistency = similarities.length ? Math.max(...similarities) : 1;
+      candidate.rawConsistency = type === "meaning" && others.length
+        ? Math.max(...others.map(other => textSimilarity(candidate.raw, other.raw, "meaning")))
+        : candidate.consistency;
       candidate.exactSupport = others.filter(other => comparableText(other.value, type) === comparableText(candidate.value, type)).length;
       candidate.comparisonScore = candidate.quality + candidate.exactSupport * 12 + candidate.consistency * (type === "meaning" ? 14 : 9);
     }
@@ -371,9 +449,13 @@
     const consistencyLimit = type === "word" ? 0.84 : 0.58;
     const stronglySupported = candidate.exactSupport > 0 || candidate.consistency >= consistencyLimit;
     const decisive = margin >= 13 && candidate.quality >= 82;
-    const unresolved = candidate.quality < (type === "word" ? 74 : 70) || (ranked.length > 1 && !stronglySupported && !decisive);
+    const rawDisagreement = type === "meaning" && ranked.length > 1 && candidate.rawConsistency < 0.42;
+    const unresolved = candidate.quality < (type === "word" ? 74 : 70) || rawDisagreement || (ranked.length > 1 && !stronglySupported && !decisive);
     const reliability = Math.round(clamp(candidate.quality * 0.82 + candidate.consistency * 18 - (unresolved ? 6 : 0)));
-    return { candidate, reliability, consistency: candidate.consistency, unresolved, attempts: candidates.length };
+    return {
+      candidate, reliability, consistency: candidate.consistency, unresolved, attempts: candidates.length,
+      candidates: ranked.map(item => ({ raw: item.raw, value: item.value, confidence: item.confidence, quality: Math.round(item.quality), variant: item.variant }))
+    };
   }
 
   function needsThirdAttempt(candidates, type) {
@@ -382,14 +464,16 @@
     return selected.unresolved || distinct > 1 || selected.reliability < 82;
   }
 
-  function mergeContinuationRows(rows, cleanMeaning) {
+  function mergeContinuationRows(rows, analyzeMeaning) {
     const merged = [];
     for (const row of rows) {
       const previous = merged[merged.length - 1];
       const samePage = previous?.pageInfo === row.pageInfo;
-      if (row.structuralContinuation && samePage) {
+      const adjacent = previous && row.rowIndex === previous.rowIndex + (previous.continuationRows || 0) + 1;
+      if (row.structuralContinuation && samePage && adjacent && previous.front) {
         previous.rawMeaning = [previous.rawMeaning, row.rawMeaning].filter(Boolean).join("\n");
-        previous.back = cleanMeaning(previous.rawMeaning);
+        previous.meaningPostprocess = analyzeMeaning(previous.rawMeaning);
+        previous.back = previous.meaningPostprocess.meaning;
         previous.meaningConfidence = Math.min(previous.meaningConfidence || 0, row.meaningConfidence || 0);
         previous.meaningValidation = {
           ...previous.meaningValidation,
@@ -399,6 +483,7 @@
         };
         previous.sourceY2 = row.sourceY2;
         previous.continuationRows = (previous.continuationRows || 0) + 1;
+        previous.continuationUncertain = Boolean(previous.continuationUncertain || row.continuationUncertain);
         continue;
       }
       merged.push(row);
@@ -409,11 +494,19 @@
   async function extract(files, options = {}) {
     const onProgress = options.onProgress || (() => {});
     const cleanMeaning = options.cleanMeaning || (value => String(value || "").trim());
+    const analyzeMeaning = options.analyzeMeaning || (value => ({ raw: String(value || "").trim(), meaning: cleanMeaning(value), uncertain: false, reasons: [] }));
     const sourcePages = [];
     for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-      onProgress({ stage: "prepare", message: (fileIndex + 1) + " / " + files.length + " 枚目の画像を準備中…" });
-      const source = await loadImage(files[fileIndex]);
-      splitPages(source).forEach((page, pageIndex) => sourcePages.push({ page, fileIndex, pageIndex }));
+      onProgress({ stage: "prepare", message: (fileIndex + 1) + " / " + files.length + " 個目の画像・PDFを準備中…" });
+      const filePages = await loadSourcePages(files[fileIndex], onProgress);
+      filePages.forEach((source, pdfPageIndex) => {
+        const deskewed = window.OcrImageProcessing?.deskewCanvas(source) || { canvas: source, angle: 0, confidence: 0 };
+        splitPages(deskewed.canvas).forEach((page, spreadIndex) => sourcePages.push({
+          page, fileIndex, pdfPageIndex, spreadIndex,
+          pageIndex: sourcePages.length,
+          deskewAngle: deskewed.angle
+        }));
+      });
     }
     const descriptors = [];
     for (let pageNumber = 0; pageNumber < sourcePages.length; pageNumber++) {
@@ -430,14 +523,18 @@
         const y1 = table.horizontalLines[rowIndex];
         const y2 = table.horizontalLines[rowIndex + 1];
         if (y2 - y1 < MIN_ROW_HEIGHT) continue;
-        const columns = table.verticalLines;
+        const columns = columnsForRow(table, y1, y2);
         const noInk = cellInkRatio(pageInfo.page, columns[0], y1, columns[1], y2);
         const wordInk = cellInkRatio(pageInfo.page, columns[1], y1, columns[2], y2);
         const meaningInk = cellInkRatio(pageInfo.page, columns[2], y1, columns[3], y2);
+        const noAndWordBlank = noInk < 0.012 && wordInk < 0.012;
+        const continuationStrength = Math.max(0, Math.min(1, (meaningInk - Math.max(noInk, wordInk)) / 0.025));
         descriptors.push({
           pageInfo, rowIndex, y1, y2, sourceY1: y1, sourceY2: y2, columns,
+          regionIndex: Math.floor(rowIndex / 25),
           isTall: y2 - y1 >= typicalRowHeight * 1.30,
-          structuralContinuation: noInk < 0.012 && wordInk < 0.012 && meaningInk >= 0.012,
+          structuralContinuation: noAndWordBlank && meaningInk >= 0.012,
+          continuationUncertain: noAndWordBlank && meaningInk >= 0.012 && continuationStrength < 0.35,
           ink: { no: noInk, word: wordInk, meaning: meaningInk }
         });
       }
@@ -451,22 +548,30 @@
     };
     const psm = window.Tesseract.PSM;
     const wordVariants = [
-      { name: "標準グレー", psm: psm.SINGLE_WORD, preprocess: { targetHeight: 160, contrast: 1.12, lineTrim: "normal" } },
-      { name: "強め二値化", psm: psm.SINGLE_WORD, preprocess: { targetHeight: 190, contrast: 1.30, threshold: 155, lineTrim: "strong" } },
-      { name: "高拡大自動二値化", psm: psm.SINGLE_LINE, preprocess: { targetHeight: 230, contrast: 1.20, threshold: "otsu", lineTrim: "light" } }
+      { name: "英語・細線保持4倍", psm: psm.SINGLE_WORD, preprocess: { scale: 4, contrast: 1.02, normalizeAmount: 0.12, lineTrim: "light", insetXRatio: 0.015, insetYRatio: 0.12, minimumInsetX: 2, padding: 18, smoothing: true, sharpen: 0.10, lineRemoval: 0.10 } },
+      { name: "英語・高解像5倍", psm: psm.SINGLE_WORD, preprocess: { scale: 5, contrast: 1.10, normalizeAmount: 0.42, lineTrim: "light", insetXRatio: 0.015, insetYRatio: 0.12, minimumInsetX: 2, padding: 20, smoothing: true, sharpen: 0.20, lineRemoval: 0.25 } },
+      { name: "英語・二値化5倍", psm: psm.SINGLE_LINE, preprocess: { scale: 5, contrast: 1.10, normalizeAmount: 0.35, threshold: "otsu", thresholdOffset: 2, lineTrim: "light", insetXRatio: 0.012, insetYRatio: 0.11, minimumInsetX: 2, padding: 20, smoothing: false, sharpen: 0.12, lineRemoval: 0.42 } }
     ];
     const meaningVariants = [
       {
-        name: "日本語高解像グレー", singlePsm: psm.SINGLE_LINE, multiPsm: psm.SINGLE_BLOCK,
-        preprocess: { targetHeight: 280, contrast: 1.08, normalizeAmount: 0.45, lowPercentile: 0.005, highPercentile: 0.999, lineTrim: "light", maxScale: 20, padding: 20 }
+        name: "日本語・細線保持4倍", singlePsm: psm.SINGLE_LINE, multiPsm: psm.SINGLE_BLOCK,
+        preprocess: { scale: 4, contrast: 1.00, normalizeAmount: 0, lowPercentile: 0.003, highPercentile: 0.9995, lineTrim: "light", insetXRatio: 0.008, insetYRatio: 0.12, minimumInsetX: 2, padding: 20, smoothing: true, sharpen: 0.80, lineRemoval: 0 }
       },
       {
-        name: "日本語高拡大グレー", singlePsm: psm.RAW_LINE || psm.SINGLE_LINE, multiPsm: psm.SINGLE_BLOCK,
-        preprocess: { targetHeight: 340, contrast: 1.16, normalizeAmount: 0.65, lowPercentile: 0.008, highPercentile: 0.998, lineTrim: "normal", maxScale: 22, padding: 24 }
+        name: "日本語・高解像5倍", singlePsm: psm.RAW_LINE || psm.SINGLE_LINE, multiPsm: psm.SINGLE_BLOCK,
+        preprocess: { scale: 5, contrast: 1.12, normalizeAmount: 0.52, lowPercentile: 0.006, highPercentile: 0.999, lineTrim: "light", insetXRatio: 0.008, insetYRatio: 0.13, minimumInsetX: 2, padding: 24, smoothing: true, denoise: true, sharpen: 0.22, lineRemoval: 0.28 }
       },
       {
-        name: "日本語原画優先グレー", singlePsm: psm.SINGLE_LINE, multiPsm: psm.SPARSE_TEXT || psm.SINGLE_BLOCK,
-        preprocess: { targetHeight: 300, contrast: 1.03, normalizeAmount: 0.25, lowPercentile: 0.002, highPercentile: 0.9995, lineTrim: "light", maxScale: 20, padding: 22 }
+        name: "日本語・原画優先3倍", singlePsm: psm.SINGLE_LINE, multiPsm: psm.SPARSE_TEXT || psm.SINGLE_BLOCK,
+        preprocess: { scale: 3, contrast: 1.02, normalizeAmount: 0.12, lowPercentile: 0.001, highPercentile: 0.9998, lineTrim: "none", insetXRatio: 0.004, insetYRatio: 0.10, minimumInsetX: 1, padding: 20, smoothing: true, sharpen: 0.08, lineRemoval: 0 }
+      },
+      {
+        name: "日本語・固定閾値二値化", singlePsm: psm.SINGLE_LINE, multiPsm: psm.SINGLE_BLOCK,
+        preprocess: { scale: 5, contrast: 1.00, normalizeAmount: 1, lowPercentile: 0.008, highPercentile: 0.995, lineTrim: "light", insetXRatio: 0.008, insetYRatio: 0.12, minimumInsetX: 2, padding: 24, smoothing: true, sharpen: 0.80, lineRemoval: 0, threshold: 185 }
+      },
+      {
+        name: "日本語・罫線除去自動二値化", singlePsm: psm.SINGLE_LINE, multiPsm: psm.SINGLE_BLOCK,
+        preprocess: { scale: 5, contrast: 1.10, normalizeAmount: 0.38, lineTrim: "light", insetXRatio: 0.008, insetYRatio: 0.13, minimumInsetX: 2, padding: 24, smoothing: false, denoise: true, sharpen: 0.16, lineRemoval: 0.55, threshold: "otsu", thresholdOffset: 4 }
       }
     ];
     let wordWorker;
@@ -487,7 +592,10 @@
         const candidates = [];
         const recognize = async variant => {
           await wordWorker.setParameters({ tessedit_pageseg_mode: variant.psm });
-          const result = await wordWorker.recognize(preprocessCell(page, row.columns[1], row.y1, row.columns[2], row.y2, variant.preprocess));
+          const prepared = window.OcrImageProcessing?.prepareCell
+            ? window.OcrImageProcessing.prepareCell(page, row.columns[1], row.y1, row.columns[2], row.y2, variant.preprocess)
+            : preprocessCell(page, row.columns[1], row.y1, row.columns[2], row.y2, variant.preprocess);
+          const result = await wordWorker.recognize(prepared);
           candidates.push(evaluateEnglish(result, variant));
         };
         await recognize(wordVariants[0]);
@@ -507,8 +615,8 @@
     let meaningWorker;
     try {
       onProgress({ stage: "engine", message: "日本語OCRエンジンを準備中…" });
-      meaningWorker = await window.Tesseract.createWorker("jpn", 1, { logger: engineLogger("日本語"), langPath: "./", gzip: false });
-      await meaningWorker.setParameters({ user_defined_dpi: "300", preserve_interword_spaces: "1" });
+      meaningWorker = await window.Tesseract.createWorker(["jpn", "eng"], 1, { logger: engineLogger("日本語"), langPath: "./", gzip: false });
+      await meaningWorker.setParameters({ user_defined_dpi: "350", preserve_interword_spaces: "1" });
       for (let index = 0; index < descriptors.length; index++) {
         const row = descriptors[index];
         onProgress({ stage: "recognize", message: "日本語の意味を読み取り中… " + (index + 1) + " / " + descriptors.length + " 行" });
@@ -516,25 +624,31 @@
         const candidates = [];
         const recognize = async variant => {
           await meaningWorker.setParameters({ tessedit_pageseg_mode: row.isTall ? variant.multiPsm : variant.singlePsm });
-          const result = await meaningWorker.recognize(preprocessCell(page, row.columns[2], row.y1, row.columns[3], row.y2, variant.preprocess));
-          candidates.push(evaluateJapanese(result, variant, cleanMeaning));
+          const prepared = window.OcrImageProcessing?.prepareCell
+            ? window.OcrImageProcessing.prepareCell(page, row.columns[2], row.y1, row.columns[3], row.y2, variant.preprocess)
+            : preprocessCell(page, row.columns[2], row.y1, row.columns[3], row.y2, variant.preprocess);
+          const result = await meaningWorker.recognize(prepared);
+          candidates.push(evaluateJapanese(result, variant, analyzeMeaning));
         };
         await recognize(meaningVariants[0]);
         if (candidates[0].suspicious) {
           onProgress({ stage: "retry", message: "日本語の意味を条件変更して再読み取り中… " + (index + 1) + " / " + descriptors.length + " 行" });
           await recognize(meaningVariants[1]);
           if (needsThirdAttempt(candidates, "meaning")) await recognize(meaningVariants[2]);
+          if (needsThirdAttempt(candidates, "meaning")) await recognize(meaningVariants[3]);
+          if (needsThirdAttempt(candidates, "meaning")) await recognize(meaningVariants[4]);
         }
         row.meaningValidation = selectBestCandidate(candidates, "meaning");
         row.rawMeaning = row.meaningValidation.candidate?.raw || "";
         row.back = row.meaningValidation.candidate?.value || "";
+        row.meaningPostprocess = row.meaningValidation.candidate?.postprocess || analyzeMeaning(row.rawMeaning);
         row.meaningConfidence = row.meaningValidation.reliability;
       }
     } finally {
       if (meaningWorker) await meaningWorker.terminate();
     }
 
-    const mergedDescriptors = mergeContinuationRows(descriptors, cleanMeaning);
+    const mergedDescriptors = mergeContinuationRows(descriptors, analyzeMeaning);
 
     return mergedDescriptors.flatMap(row => {
       const header = /^(word|headword)$/i.test(row.front) || /見出し語|意味/.test(row.rawMeaning);
@@ -546,20 +660,45 @@
       if (row.front && !plausibleWord) reviewReasons.push("見出し語の形式");
       if (row.wordValidation?.unresolved) reviewReasons.push("英単語を再読取しても候補が不一致");
       if (row.meaningValidation?.unresolved) reviewReasons.push("日本語を再読取しても判定困難");
+      if (row.meaningPostprocess?.uncertain) reviewReasons.push(...row.meaningPostprocess.reasons);
+      if (row.continuationUncertain) reviewReasons.push("2行にまたがる意味の結合を確認してください");
       if (confidence < 70) reviewReasons.push("自動検証後も信頼度が低い");
       return [{
         front: row.front,
+        rawMeaning: row.rawMeaning,
         back: row.back,
         confidence,
         needsReview: reviewReasons.length > 0,
         status: reviewReasons.length > 0 ? "needs_review" : "ocr_ok",
         reviewReason: reviewReasons.join("・"),
-        validationSummary: "英" + (row.wordValidation?.attempts || 1) + "回／日" + (row.meaningValidation?.attempts || 1) + "回で自動比較",
+        validationSummary: "英" + (row.wordValidation?.attempts || 1) + "回／日" + (row.meaningValidation?.attempts || 1) + "回で自動比較（" + (row.meaningValidation?.candidate?.variant || "標準") + "採用）",
+        ...(options.includeDebugCandidates ? { ocrCandidates: row.meaningValidation?.candidates || [] } : {}),
         sourceImage: makeRowPreview(row.pageInfo.page, row.columns[0], row.sourceY1, row.columns[3], row.sourceY2),
-        source: (row.pageInfo.fileIndex + 1) + "枚目・" + (row.pageInfo.pageIndex + 1) + "ページ・" + (row.rowIndex + 1) + "行" + (row.continuationRows ? "から" + (row.rowIndex + row.continuationRows + 1) + "行" : "")
+        source: (row.pageInfo.fileIndex + 1) + "個目・PDF/画像" + (row.pageInfo.pdfPageIndex + 1) + "ページ・表" + (row.pageInfo.spreadIndex + 1) + "・" + (row.rowIndex + 1) + "行" + (row.continuationRows ? "から" + (row.rowIndex + row.continuationRows + 1) + "行" : "")
       }];
     });
   }
 
-  window.TableOcr = { extract };
+  async function inspectLayout(file) {
+    const sourcePages = await loadSourcePages(file, () => {});
+    return sourcePages.flatMap((source, pdfPageIndex) => {
+      const deskewed = window.OcrImageProcessing?.deskewCanvas(source) || { canvas: source, angle: 0 };
+      return splitPages(deskewed.canvas).map((page, spreadIndex) => {
+        const table = findTable(page);
+        return {
+          pdfPageIndex,
+          spreadIndex,
+          deskewAngle: deskewed.angle,
+          size: [page.width, page.height],
+          verticalLines: table.verticalLines,
+          horizontalLines: table.horizontalLines,
+          firstRows: table.horizontalLines.slice(0, 5).map((y1, index) => index < table.horizontalLines.length - 1
+            ? columnsForRow(table, y1, table.horizontalLines[index + 1])
+            : null).filter(Boolean),
+        };
+      });
+    });
+  }
+
+  window.TableOcr = { extract, inspectLayout };
 })();

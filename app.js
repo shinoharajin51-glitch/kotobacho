@@ -55,7 +55,7 @@
   function normalizeData(value) {
     const notebooks = Array.isArray(value.notebooks) ? value.notebooks.map(book => ({
       id: book.id || crypto.randomUUID(), name: book.name || "名称未設定", category: book.category === "classical" ? "classical" : "english",
-      words: Array.isArray(book.words) ? book.words.map(word => ({ id: word.id || crypto.randomUUID(), front: word.front || "", back: word.back || "", note: word.note || "", answerCandidates: Array.isArray(word.answerCandidates) ? word.answerCandidates.filter(Boolean) : [] })) : [],
+      words: Array.isArray(book.words) ? book.words.map(word => ({ id: word.id || crypto.randomUUID(), front: word.front || "", back: word.back || "", note: word.note || "", ocrRawMeaning: word.ocrRawMeaning || "", answerCandidates: Array.isArray(word.answerCandidates) ? word.answerCandidates.filter(Boolean) : [] })) : [],
       reviewIds: Array.isArray(book.reviewIds) ? book.reviewIds : []
     })) : [];
     return { notebooks, activeNotebookId: notebooks.some(book => book.id === value.activeNotebookId) ? value.activeNotebookId : notebooks[0]?.id || null };
@@ -113,19 +113,7 @@
       .replace(/[\s　]+/g, "").replace(/[、。，．,.・･/／\\'"“”‘’「」『』()（）\[\]【】≪≫〈〉《》〔〕｛｝{}：:;；!?！？]/g, "");
   }
   function firstMeaning(value) {
-    const source = String(value ?? "").replace(/\r?\n/g, " ").trim();
-    if (!source) return "";
-    // Circled ① is often read as D, O, 0 or a closing parenthesis in small scans.
-    const withoutNoise = source.replace(/^[\s©〇○@DＯO0)）]+(?=[ぁ-んァ-ン一-龯々ゝゞー（(])/, "");
-    const withoutNumber = withoutNoise.replace(/^\s*(?:[①-⑳]|\d+\s*[.．、])\s*/, "");
-    const firstPart = withoutNumber.split(/\s*(?:[②-⑳]|\d+\s*[.．、])\s*/)[0];
-    const withoutEditorialNotes = firstPart.replace(/[（(]([^）)]*)[）)]/g, (whole, content) => {
-      const note = String(content || "").normalize("NFKC").trim();
-      return /[A-Za-z]/.test(note) || /^(?:日|米|英|主に|通例|通常)$/.test(note) ? "" : whole;
-    });
-    return withoutEditorialNotes.replace(/^[\s:：、，,・･©〇○@-]+|[\s:：、，,・･©〇○@-]+$/g, "")
-      .replace(/([ぁ-んァ-ン一-龯々ゝゞー])\s+(?=[ぁ-んァ-ン一-龯々ゝゞー、，,])/g, "$1")
-      .replace(/[\s　]+/g, " ").replace(/\s*([、，,])\s*/g, "$1").normalize("NFKC").trim();
+    return window.OcrJapanese.analyzeMeaning(value).meaning;
   }
   function answerCandidates(answer, category) {
     const first = firstMeaning(answer);
@@ -255,9 +243,9 @@
     const root = $("#import-results");
     root.innerHTML = importRows.length ? importRows.map((row, index) => {
       const status = importRowStatus(row);
-      const preview = row.sourceImage ? `<div class="import-source-preview"><span>元画像</span><img src="${row.sourceImage}" alt="${index + 1}行目の元画像" loading="lazy" /></div>` : "";
+      const preview = row.sourceImage ? `<div class="import-source-preview"><span>元画像（タップで拡大）</span><button class="source-preview-button" data-open-ocr-preview="${index}" type="button" aria-label="${index + 1}行目の元画像を拡大"><img src="${row.sourceImage}" alt="${index + 1}行目の元画像" loading="lazy" /></button></div>` : "";
       const quality = row.confidence == null ? "手入力" : `OCR信頼度 ${row.confidence}%`;
-      return `<article class="import-row ${status === "needs_review" ? "needs-review" : status === "edited" ? "edited-row" : ""}" data-import-index="${index}">${preview}<span class="row-number">${index + 1}</span><div class="import-field"><small>見出し語</small><input data-import-front="${index}" value="${escapeHtml(row.front)}" aria-label="${index + 1}行目の見出し語" placeholder="見出し語" /></div><div class="import-field"><small>最初の意味</small><input data-import-back="${index}" value="${escapeHtml(row.back)}" aria-label="${index + 1}行目の意味" placeholder="意味" /></div><div class="import-quality"><div class="import-status-control">${importStatusHtml(row, index)}</div><small>${quality}${row.validationSummary ? `<br>${escapeHtml(row.validationSummary)}` : ""}${status === "needs_review" && row.reviewReason ? `<br>${escapeHtml(row.reviewReason)}` : ""}<br>${escapeHtml(row.source || "")}</small></div><button class="icon-button delete" data-remove-import-row="${index}" type="button" aria-label="${index + 1}行目を削除">削除</button></article>`;
+      return `<article class="import-row ${status === "needs_review" ? "needs-review" : status === "edited" ? "edited-row" : ""}" data-import-index="${index}">${preview}<span class="row-number">${index + 1}</span><div class="import-field import-front-field"><small>見出し語</small><input data-import-front="${index}" value="${escapeHtml(row.front)}" aria-label="${index + 1}行目の見出し語" placeholder="見出し語" /></div><div class="import-field import-raw-field"><small>OCRした日本語原文</small><textarea rows="2" data-import-raw="${index}" aria-label="${index + 1}行目のOCR原文" placeholder="括弧や記号を含むOCR原文">${escapeHtml(row.rawMeaning ?? row.back)}</textarea></div><div class="import-field import-back-field"><small>登録する意味</small><input data-import-back="${index}" value="${escapeHtml(row.back)}" aria-label="${index + 1}行目の登録する意味" placeholder="単語テストで使う意味" /></div><div class="import-quality"><div class="import-status-control">${importStatusHtml(row, index)}</div><small>${quality}${row.validationSummary ? `<br>${escapeHtml(row.validationSummary)}` : ""}${status === "needs_review" && row.reviewReason ? `<br>${escapeHtml(row.reviewReason)}` : ""}<br>${escapeHtml(row.source || "")}</small></div><button class="icon-button delete" data-remove-import-row="${index}" type="button" aria-label="${index + 1}行目を削除">削除</button></article>`;
     }).join("") : `<div class="empty-state">読み取った単語がここに表示されます。</div>`;
     updateImportControls();
   }
@@ -271,20 +259,21 @@
       const match = category === "classical"
         ? line.match(/^([ぁ-んァ-ン一-龯々ゝゞー]{1,30})\s+(.+)$/)
         : line.match(/^([A-Za-z][A-Za-z'’\- ]{0,50})\s+(.+)$/);
-      if (match) { rows.push({ front: match[1].trim(), back: firstMeaning(match[2]) }); pendingFront = ""; continue; }
+      if (match) { rows.push({ front: match[1].trim(), rawMeaning: match[2].trim(), back: firstMeaning(match[2]) }); pendingFront = ""; continue; }
       const isHeadwordOnly = category === "classical" ? /^[ぁ-んァ-ン一-龯々ゝゞー]{1,30}$/.test(line) : /^[A-Za-z][A-Za-z'’\- ]{0,50}$/.test(line);
       if (isHeadwordOnly) { pendingFront = line.trim(); continue; }
-      if (pendingFront) { rows.push({ front: pendingFront, back: firstMeaning(line) }); pendingFront = ""; }
+      if (pendingFront) { rows.push({ front: pendingFront, rawMeaning: line, back: firstMeaning(line) }); pendingFront = ""; }
     }
     return rows.filter(row => row.front && row.back);
   }
   async function runOcr() {
-    if (!selectedImages.length) { setOcrStatus("画像が選択されていません。「単語表の画像を選択」を押して画像を選んでください。", "error"); return; }
+    if (!selectedImages.length) { setOcrStatus("画像・PDFが選択されていません。「単語表の画像・PDFを選択」を押してください。", "error"); return; }
     if (!window.Tesseract || !window.TableOcr) { setOcrStatus("OCRライブラリを読み込めませんでした。インターネット接続を確認して、アプリを再読み込みしてください。", "error"); return; }
     $("#run-ocr-button").disabled = true; $("#create-from-import").disabled = true; importRows = [];
     try {
       importRows = await window.TableOcr.extract(selectedImages, {
         cleanMeaning: firstMeaning,
+        analyzeMeaning: value => window.OcrJapanese.analyzeMeaning(value),
         onProgress: progress => setOcrStatus(progress.message, "working")
       });
       renderImportRows();
@@ -422,14 +411,16 @@
     const bookButton = event.target.closest("[data-select-book]"); if (bookButton) { selectBook(bookButton.dataset.selectBook); showToast("単語帳を選択しました。"); return; }
     const removeImage = event.target.closest("[data-remove-image]"); if (removeImage) { selectedImages.splice(Number(removeImage.dataset.removeImage), 1); renderSelectedImages(); setOcrStatus(selectedImages.length ? "画像を変更しました。「画像を読み取る」を押してください。" : "画像を選択して「画像を読み取る」を押してください。"); return; }
     if (event.target.id === "run-ocr-button") return runOcr();
-    if (event.target.id === "add-import-row") { importRows.push({ front: "", back: "", confidence: null, needsReview: true, status: "needs_review", reviewReason: "見出し語と意味を入力してください", source: "手入力" }); renderImportRows(); return; }
+    if (event.target.id === "add-import-row") { importRows.push({ front: "", rawMeaning: "", back: "", confidence: null, needsReview: true, status: "needs_review", reviewReason: "見出し語と意味を入力してください", source: "手入力" }); renderImportRows(); return; }
+    const openOcrPreview = event.target.closest("[data-open-ocr-preview]"); if (openOcrPreview) { const row = importRows[Number(openOcrPreview.dataset.openOcrPreview)]; if (!row?.sourceImage) return; $("#ocr-preview-large-image").src = row.sourceImage; const dialog = $("#ocr-preview-dialog"); if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", ""); return; }
+    if (event.target.id === "close-ocr-preview") { $("#ocr-preview-dialog").close(); return; }
     const removeImportRow = event.target.closest("[data-remove-import-row]"); if (removeImportRow) { importRows.splice(Number(removeImportRow.dataset.removeImportRow), 1); renderImportRows(); return; }
     const confirmImportRow = event.target.closest("[data-confirm-import-row]"); if (confirmImportRow) { const row = importRows[Number(confirmImportRow.dataset.confirmImportRow)]; if (row.front.trim() && row.back.trim()) { row.needsReview = false; row.status = "confirmed"; row.reviewReason = ""; } renderImportRows(); return; }
     if (event.target.id === "confirm-all-import") { importRows.forEach(row => { if (importRowStatus(row) === "needs_review" && row.front.trim() && row.back.trim()) { row.needsReview = false; row.status = "confirmed"; row.reviewReason = ""; } }); renderImportRows(); return; }
     if (event.target.id === "create-from-import") {
       const name = $("#import-notebook-name").value.trim();
       const category = $("#import-category").value;
-      const words = importRows.map(row => ({ front: row.front.trim(), back: firstMeaning(row.back), note: "" })).filter(word => word.front && word.back).map(word => ({ id: crypto.randomUUID(), ...word, answerCandidates: answerCandidates(word.back, category) }));
+      const words = importRows.map(row => ({ front: row.front.trim(), back: row.back.trim(), note: "", ocrRawMeaning: String(row.rawMeaning || "").trim() })).filter(word => word.front && word.back).map(word => ({ id: crypto.randomUUID(), ...word, answerCandidates: answerCandidates(word.back, category) }));
       if (!name) { setOcrStatus("単語帳の名前を入力してください。", "error"); $("#import-notebook-name").focus(); return; }
       if (!words.length) { setOcrStatus("登録できる単語がありません。見出し語と意味を入力してください。", "error"); return; }
       if (importRows.some(row => importRowStatus(row) === "needs_review" || !row.front.trim() || !row.back.trim())) { setOcrStatus("「要確認」の行が残っています。内容を修正するか、「確認済みにする」を押してください。", "error"); return; }
@@ -462,15 +453,22 @@
     if (event.target.id === "cancel-word-edit") return resetWordForm();
     if (event.target.id === "export-button") { const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `kotobacho-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url); }
   });
-  $("#image-input").addEventListener("change", event => { selectedImages = [...event.target.files].filter(file => file.type.startsWith("image/")); importRows = []; renderSelectedImages(); renderImportRows(); setOcrStatus(selectedImages.length ? `${selectedImages.length}枚の画像を選択しました。「画像を読み取る」を押してください。` : "画像が選択されていません。", selectedImages.length ? "info" : "error"); });
+  $("#image-input").addEventListener("change", event => { selectedImages = [...event.target.files].filter(file => file.type.startsWith("image/") || file.type === "application/pdf" || /\.pdf$/i.test(file.name)); importRows = []; renderSelectedImages(); renderImportRows(); setOcrStatus(selectedImages.length ? `${selectedImages.length}件の画像・PDFを選択しました。「画像を読み取る」を押してください。` : "画像・PDFが選択されていません。", selectedImages.length ? "info" : "error"); });
   $("#import-results").addEventListener("input", event => {
     const front = event.target.closest("[data-import-front]");
+    const raw = event.target.closest("[data-import-raw]");
     const back = event.target.closest("[data-import-back]");
-    const input = front || back;
+    const input = front || raw || back;
     if (!input) return;
-    const index = Number(front ? front.dataset.importFront : back.dataset.importBack);
+    const index = Number(front ? front.dataset.importFront : raw ? raw.dataset.importRaw : back.dataset.importBack);
     const row = importRows[index];
     if (front) row.front = front.value;
+    if (raw) {
+      row.rawMeaning = raw.value;
+      row.back = firstMeaning(raw.value);
+      const backInput = $("#import-results").querySelector(`[data-import-back="${index}"]`);
+      if (backInput) backInput.value = row.back;
+    }
     if (back) row.back = back.value;
     const complete = row.front.trim() && row.back.trim();
     row.status = complete ? "edited" : "needs_review";
@@ -486,8 +484,9 @@
     updateImportControls();
   });
   $("#import-results").addEventListener("change", event => {
-    if (event.target.matches("[data-import-front],[data-import-back]")) renderImportRows();
+    if (event.target.matches("[data-import-front],[data-import-raw],[data-import-back]")) renderImportRows();
   });
+  $("#ocr-preview-dialog").addEventListener("click", event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
   $("#study-range-list").addEventListener("input", event => {
     const startInput = event.target.closest("[data-range-start]");
     const endInput = event.target.closest("[data-range-end]");

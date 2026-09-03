@@ -74,21 +74,30 @@
     return result.data || [];
   }
 
+  async function loadWordRows(database) {
+    let result = await database.from("words")
+      .select("id,notebook_id,front,back,note,ocr_raw_meaning,answer_candidates,sort_index,created_at")
+      .order("sort_index", { ascending: true });
+    if (result.error && /ocr_raw_meaning/i.test(String(result.error.message || result.error.details || ""))) {
+      result = await database.from("words")
+        .select("id,notebook_id,front,back,note,answer_candidates,sort_index,created_at")
+        .order("sort_index", { ascending: true });
+    }
+    return throwIfError(result);
+  }
+
   async function loadData() {
     const database = requireClient();
-    const [notebooksResult, wordsResult, reviewResult] = await Promise.all([
+    const [notebooksResult, wordRows, reviewResult] = await Promise.all([
       database.from("notebooks")
         .select("id,name,category,sort_index,created_at")
         .order("sort_index", { ascending: true }),
-      database.from("words")
-        .select("id,notebook_id,front,back,note,answer_candidates,sort_index,created_at")
-        .order("sort_index", { ascending: true }),
+      loadWordRows(database),
       database.from("review_items")
         .select("notebook_id,word_id"),
     ]);
 
     const notebookRows = throwIfError(notebooksResult);
-    const wordRows = throwIfError(wordsResult);
     const reviewRows = throwIfError(reviewResult);
     const wordsByNotebook = new Map();
     const reviewByNotebook = new Map();
@@ -100,6 +109,7 @@
         front: row.front,
         back: row.back,
         note: row.note || "",
+        ocrRawMeaning: row.ocr_raw_meaning || "",
         answerCandidates: Array.isArray(row.answer_candidates)
           ? row.answer_candidates.filter(Boolean)
           : [],
@@ -142,6 +152,7 @@
               front: word.front,
               back: word.back,
               note: word.note || "",
+              ocr_raw_meaning: word.ocrRawMeaning || "",
               answer_candidates: [...new Set(candidates.filter(Boolean))],
             };
           }),

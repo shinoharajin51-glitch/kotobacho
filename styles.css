@@ -201,3 +201,29 @@ textarea { min-height:112px; resize:vertical; }
   .range-mode-button,.range-preset-button { min-height:58px; }
   .number-select-button { min-width:52px; min-height:52px; font-size:1.05rem; }
 }
+
+/* OCR confirmation: keep the original text separate from the registered meaning. */
+.import-row { grid-template-columns:30px minmax(115px,.65fr) minmax(230px,1.5fr) minmax(180px,1fr) minmax(125px,.6fr) auto; }
+.source-preview-button { display:block; width:100%; padding:0; overflow:hidden; border:1px solid transparent; border-radius:8px; background:white; cursor:zoom-in; }
+.source-preview-button:hover,.source-preview-button:focus-visible { border-color:var(--blue); outline:none; }
+.source-preview-button img { max-height:96px; }
+.import-row input,.import-row textarea { margin:0; min-width:0; }
+.import-row textarea { min-height:76px; resize:vertical; }
+.ocr-preview-dialog { width:min(96vw,1100px); max-height:90vh; padding:15px; border:0; border-radius:18px; background:white; box-shadow:0 24px 70px #101a3455; }
+.ocr-preview-dialog::backdrop { background:#111827b8; }
+.ocr-preview-dialog-bar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:12px; }
+.ocr-preview-dialog img { display:block; width:100%; max-height:calc(90vh - 90px); object-fit:contain; border-radius:10px; background:#f4f5f8; }
+
+@media (min-width:761px) and (max-width:900px) {
+  .import-row { grid-template-columns:28px 1fr; padding:12px; }
+  .import-field,.import-quality { grid-column:2; }
+  .import-row > .delete { grid-column:2; justify-self:end; }
+}
+
+@media (max-width:760px) {
+  .import-source-preview { grid-template-columns:1fr; }
+  .import-source-preview span { font-size:.82rem; }
+  .source-preview-button img { max-height:120px; }
+  .import-row textarea { min-height:92px; }
+  .ocr-preview-dialog { width:calc(100vw - 18px); padding:12px; }
+}
